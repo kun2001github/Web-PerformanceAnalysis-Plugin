@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Web性能分析工具（复刻版）",
+  "version": "1.0",
+  "description": "完全复刻目标UI的Web性能分析插件，包含关键指标、瀑布流、多维度资源分析",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["lib/chart.umd.js", "lib/echarts.min.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

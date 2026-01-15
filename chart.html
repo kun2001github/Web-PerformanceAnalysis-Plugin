@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>像素级还原-性能分析瀑布图</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        body { margin: 0; padding: 20px; background: #fff; }
+        #main { width: 100%; max-width: 1200px; height: 600px; margin: 0 auto; }
+    </style>
+</head>
+<body>
+    <div id="main"></div>
+
+    <script>
+        const chartDom = document.getElementById('main');
+        const myChart = echarts.init(chartDom);
+
+        // 1. 数据配置（包含公式和并行逻辑）
+        const rawData = [
+            { name: 'unLoad',   val: 0,   color: '#ccc',    f: 'unloadEventEnd - unloadEventStart' },
+            { name: 'Redirect', val: 0,   color: '#ccc',    f: 'redirectEnd - redirectStart' },
+            { name: 'AppCache', val: 80,   color: '#FBE192', f: 'domainLookupStart - fetchStart' },
+            { name: 'DNS',      val: 4,  color: '#9561F9', f: 'domainLookupEnd - domainLookupStart' },
+            { name: 'TCP',      val: 60,  color: '#2ACCA9', f: 'connectEnd - connectStart' },
+            { name: 'SSL',      val: 20,  color: '#FBAA6E', f: 'connectEnd - secureConnectionStart', parallel: true, syncWith: 'TCP' },
+            { name: 'TTFB',     val: 28,  color: '#FACC55', f: 'responseStart - requestStart' },
+            { name: '数据传输',  val: 2,   color: '#F59363', f: 'responseEnd - responseStart' },
+            { name: '交互DOM',   val: 60,  color: '#EF5E79', f: 'domContentLoadedEventStart - responseEnd' },
+            { name: '剩余DOM',   val: 0,   color: '#ccc',    f: 'domInteractive - domLoading' },
+            { name: 'DCL',      val: 0,   color: '#9F92D6', f: 'domContentLoadedEventEnd - domContentLoadedEventStart' },
+            { name: '资源加载',  val: 184, color: '#42CE68', f: 'loadEventStart - domContentLoadedEnd' },
+            { name: 'onLoad',   val: 1,   color: '#6AA7F3', f: 'loadEventEnd - loadEventStart' }
+        ];
+
+        // 2. 逻辑计算：处理时间轴偏移 + 定位SSL前最后一个0项
+        let currentTime = 0;
+        let processed = [];
+        let syncs = {};
+        
+        // 关键：找到SSL项的索引
+        const sslIndex = rawData.findIndex(item => item.name === 'SSL');
+        // 找到SSL项之前最后一个值为0的项的索引
+        const lastZeroBeforeSSLIndex = rawData.slice(0, sslIndex).reduce((lastIdx, item, idx) => {
+            return item.val === 0 ? idx : lastIdx;
+        }, -1);
+
+        rawData.forEach((item, idx) => {
+            let start = currentTime;
+            if (item.parallel) {
+                start = syncs[item.syncWith] || start;
+            } else {
+                syncs[item.name] = start;
+                currentTime += item.val;
+            }
+            processed.push({ ...item, start, end: start + item.val, index: idx });
+        });
+
+        // 插入总耗时（从0到最后的currentTime）
+        const totalTime = currentTime;
+        processed.push({ name: '总耗时', val: totalTime, start: 0, end: totalTime, color: '#DCE0E5', f: 'Total', index: processed.length });
+
+        const BAR_H = 18; // 柱子高度
+
+        const option = {
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(235, 243, 255, 0.5)' } },
+                formatter: params => {
+                    const d = processed[params[0].dataIndex];
+                    return `<div style="font-size:14px;font-weight:bold">${d.name}</div>
+                            <div style="color:#999;font-size:12px;margin-bottom:5px">${d.f}</div>
+                            <span style="color:${d.color}">●</span> <b>${d.val} ms</b>`;
+                }
+            },
+            grid: { top: 30, bottom: 60, left: 100, right: 80, containLabel: true },
+            xAxis: {
+                type: 'value',
+                max: Math.ceil(totalTime / 100) * 100 + 50,
+                splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } },
+                axisLabel: { color: '#999' }
+            },
+            yAxis: {
+                type: 'category',
+                data: processed.map(d => d.name),
+                inverse: true,
+                axisLine: { lineStyle: { color: '#eee' } },
+                axisTick: { alignWithLabel: true }
+            },
+            series: [
+                // 1. 占位背景（实现瀑布偏移）
+                {
+                    type: 'bar', stack: 'total',
+                    itemStyle: { color: 'transparent' },
+                    data: processed.map(d => d.start),
+                    silent: true
+                },
+                // 2. 真实数据条
+                {
+                    name: '耗时',
+                    type: 'bar', stack: 'total',
+                    barWidth: BAR_H,
+                    itemStyle: { color: (p) => processed[p.dataIndex].color, borderRadius: 1 },
+                    label: {
+                        show: true, position: 'right',
+                        formatter: (p) => p.value > 0 ? p.value + ' ms' : '',
+                        color: '#666', fontSize: 11
+                    },
+                    data: processed.map(d => d.val)
+                },
+                // 3. 核心：全自动化虚线引擎
+                {
+                    type: 'custom',
+                    renderItem: (params, api) => {
+                        const i = params.dataIndex;
+                        const curr = processed[i];
+                        const style = { stroke: '#aaa', lineDash: [3, 3], lineWidth: 1 };
+
+                        // A. 顶部第一条连线：从 Y轴顶点 (0,0) 连到第一个非零柱子的左侧（保持原有逻辑）
+                        if (i === 0) {
+                            const firstActive = processed.find(d => d.val > 0);
+                            if (!firstActive) return;
+                            const startP = api.coord([0, 0]);
+                            const endP = api.coord([firstActive.start, firstActive.index]);
+                            return { type: 'line', shape: { x1: startP[0], y1: startP[1], x2: endP[0], y2: endP[1] - BAR_H/2 }, style };
+                        }
+
+                        // B. 关键优化：SSL前最后一个0项的虚线连到下一个非零项（SSL）的末尾右侧
+                        if (i === lastZeroBeforeSSLIndex) {
+                            // 找到当前0项之后第一个非零的项（即SSL）
+                            const nextActive = processed.slice(i + 1).find(d => d.val > 0);
+                            if (!nextActive) return;
+                            const startP = api.coord([curr.end, i]); // 从当前0项的结束位置出发
+                            const endP = api.coord([nextActive.end, nextActive.index]); // 连到SSL的末尾右侧
+                            return { type: 'line', shape: { x1: startP[0], y1: startP[1] + BAR_H/2, x2: endP[0], y2: endP[1] - BAR_H/2 }, style };
+                        }
+
+                        // C. 总耗时末尾连线：从 onLoad 的结束点 连到 总耗时的结束点
+                        if (curr.name === '总耗时') {
+                            const prev = processed[i-1];
+                            const pEnd = api.coord([prev.end, i - 1]);
+                            const cEnd = api.coord([curr.end, i]);
+                            return { type: 'line', shape: { x1: pEnd[0], y1: pEnd[1] + BAR_H/2, x2: cEnd[0], y2: cEnd[1] - BAR_H/2 }, style };
+                        }
+
+                        // D. 常规瀑布线：上一行 End -> 本行 Start（保持原有逻辑）
+                        const prev = processed[i-1];
+                        const pEnd = api.coord([prev.end, i - 1]);
+                        const cStart = api.coord([curr.start, i]);
+
+                        // 如果是并行（如SSL），线不需要交叉，直接垂直下落
+                        return {
+                            type: 'line',
+                            shape: { 
+                                x1: pEnd[0], y1: pEnd[1] + BAR_H/2, 
+                                x2: cStart[0], y2: cStart[1] - BAR_H/2 
+                            },
+                            style
+                        };
+                    },
+                    data: processed,
+                    silent: true
+                }
+            ]
+        };
+
+        myChart.setOption(option);
+        window.addEventListener('resize', myChart.resize);
+    </script>
+</body>
+</html>

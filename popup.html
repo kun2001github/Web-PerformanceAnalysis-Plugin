@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<!--
+  Web性能分析插件 - 主弹窗页面
+  ========================================
+  文件说明：popup.html
+  功能：提供性能分析的可视化界面
+  主要模块：
+    1. 关键指标展示（Core Vitals）
+    2. 瀑布流图表（页面各阶段耗时）
+    3. 资源概览统计
+    4. 深度分析图表（多维度数据可视化）
+    5. 慢资源排行列表
+  ========================================
+-->
+<html lang="zh-CN">
+<head>
+  <!-- 文档元数据 -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web性能分析工具</title>
+  <!-- 引入样式表 -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- 应用根容器 -->
+  <div class="app-container">
+
+    <!-- 顶部导航栏 -->
+    <!-- 说明：固定在顶部的导航栏，包含应用标题和刷新按钮 -->
+    <!-- 样式：使用毛玻璃效果（Glassmorphism） -->
+    <header class="app-header">
+      <!-- 标题区域：包含图标和标题文字 -->
+      <div class="header-title">
+        <!-- 闪电图标：象征性能快速 -->
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+        </svg>
+        <h1>性能分析</h1>
+      </div>
+
+
+    </header>
+
+    <!-- 主要内容区域 -->
+    <main class="content-body">
+
+      <!-- ========== 模块1: 关键性能指标 ========== -->
+      <!-- 说明：展示Web Vitals核心指标，包括TTFB、FCP、FMP等 -->
+      <!-- 动画：使用fade-in-up动画，延迟0.1s执行 -->
+      <section class="section fade-in-up" style="--delay: 0.1s">
+        <div class="section-header">
+          <h2>关键指标</h2>
+          <span class="badge">Core Vitals</span>
+        </div>
+
+        <!-- 指标网格：4列布局 -->
+        <div class="metrics-grid">
+          <!-- TTFB（首包时间）：高亮显示 -->
+          <div class="metric-card highlight">
+            <span class="label">首包 (TTFB)</span>
+            <span class="value" id="fp">0ms</span>
+            <div class="indicator"></div>
+          </div>
+
+          <!-- 首次渲染时间 -->
+          <div class="metric-card">
+            <span class="label">首次渲染</span>
+            <span class="value" id="fRender">0ms</span>
+          </div>
+
+          <!-- 首次可交互时间 -->
+          <div class="metric-card">
+            <span class="label">可交互时间</span>
+            <span class="value" id="fInteractive">0ms</span>
+          </div>
+
+          <!-- DOM Ready时间 -->
+          <div class="metric-card">
+            <span class="label">DOM Ready</span>
+            <span class="value" id="domReady">0ms</span>
+          </div>
+
+          <!-- 页面加载完成时间 -->
+          <div class="metric-card">
+            <span class="label">页面加载</span>
+            <span class="value" id="pageLoad">0ms</span>
+          </div>
+
+          <!-- First Paint（首次绘制） -->
+          <div class="metric-card">
+            <span class="label">First Paint</span>
+            <span class="value" id="fpaint">0ms</span>
+          </div>
+
+          <!-- FCP（首次内容绘制） -->
+          <div class="metric-card">
+            <span class="label">FCP</span>
+            <span class="value" id="fcPaint">0ms</span>
+          </div>
+
+          <!-- FMP（首次有意义绘制） -->
+          <div class="metric-card">
+            <span class="label">FMP</span>
+            <span class="value" id="fmPaint">0ms</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 模块2: 瀑布流图表 ========== -->
+      <!-- 说明：可视化展示页面加载各阶段的耗时分布 -->
+      <!-- 图表库：ECharts -->
+      <!-- 动画：延迟0.2s -->
+      <section class="section fade-in-up" style="--delay: 0.2s">
+        <div class="section-header">
+          <h2>各页面各阶段耗时统计</h2>
+        </div>
+        <div class="waterfall-container">
+          <!-- ECharts容器：渲染瀑布流图 -->
+          <div id="waterfallChart"></div>
+        </div>
+      </section>
+
+      <!-- ========== 模块3: 资源概览 ========== -->
+      <!-- 说明：展示资源加载的关键统计信息 -->
+      <!-- 包含：域名数、请求数、传输大小、耗时等 -->
+      <!-- 动画：延迟0.3s -->
+      <section class="section fade-in-up" style="--delay: 0.3s">
+        <div class="section-header">
+          <h2>资源分析</h2>
+        </div>
+
+        <!-- 资源统计网格：统一使用metric-card样式 -->
+        <div class="metrics-grid">
+          <!-- 域名总数 -->
+          <div class="metric-card">
+            <span class="label">域名总数</span>
+            <span class="value" id="domainTotal">0个</span>
+          </div>
+
+          <!-- 请求总数 -->
+          <div class="metric-card">
+            <span class="label">请求总数</span>
+            <span class="value" id="requestTotal">0个</span>
+          </div>
+
+          <!-- 总耗时 -->
+          <div class="metric-card">
+            <span class="label">总耗时</span>
+            <span class="value" id="totalTime">0ms</span>
+          </div>
+
+          <!-- 平均耗时 -->
+          <div class="metric-card">
+            <span class="label">平均耗时</span>
+            <span class="value" id="avgTime">0ms</span>
+          </div>
+
+          <!-- 网络耗时 -->
+          <div class="metric-card">
+            <span class="label">网络耗时</span>
+            <span class="value" id="networkTime">0ms</span>
+          </div>
+
+          <!-- 压缩大小 -->
+          <div class="metric-card">
+            <span class="label">压缩大小</span>
+            <span class="value" id="compressedSize">0B</span>
+          </div>
+
+          <!-- 实际大小 -->
+          <div class="metric-card">
+            <span class="label">实际大小</span>
+            <span class="value" id="actualSize">0B</span>
+          </div>
+
+          <!-- 压缩率 -->
+          <div class="metric-card">
+            <span class="label">压缩率</span>
+            <span class="value" id="compressionRate">0%</span>
+          </div>
+
+          <!-- 跨域无法统计请求 -->
+          <div class="metric-card">
+            <span class="label">跨域限制</span>
+            <span class="value" id="crossDomainRequests">0个</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 模块4: 深度分析图表 ========== -->
+      <!-- 说明：多维度分析资源加载情况 -->
+      <!-- 图表库：Chart.js和ECharts -->
+      <!-- 图表类型：饼图、柱状图等 -->
+      <!-- 动画：延迟0.4s -->
+      <section class="section fade-in-up" style="--delay: 0.4s">
+        <div class="section-header">
+          <h2>深度分析</h2>
+        </div>
+
+        <!-- 图表网格：2列布局，共12个图表 -->
+        <div class="charts-grid-section">
+          <!-- 1. 请求数量域名分布 -->
+          <div class="chart-card">
+            <h3>请求数量域名分布</h3>
+            <div class="canvas-wrap">
+              <canvas id="reqCountDomainChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 2. 域名分布 -->
+          <div class="chart-card">
+            <h3>域名分布</h3>
+            <div class="canvas-wrap">
+              <canvas id="domainDistChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 3. 请求域名分布 -->
+          <div class="chart-card">
+            <h3>请求域名分布</h3>
+            <div class="canvas-wrap">
+              <canvas id="reqDomainChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 4. 各域名耗时 -->
+          <div class="chart-card">
+            <h3>各域名耗时</h3>
+            <div class="canvas-wrap">
+              <canvas id="domainTimeChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 5. 跨域分布 (No TAO) -->
+          <div class="chart-card">
+            <h3>跨域分布 (No TAO)</h3>
+            <div class="canvas-wrap">
+              <canvas id="taoDomainChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 6. 缓存命中率 -->
+          <div class="chart-card">
+            <h3>缓存命中率</h3>
+            <div class="canvas-wrap">
+              <canvas id="cacheRateChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 7. 文本压缩率 -->
+          <div class="chart-card">
+            <h3>文本压缩率</h3>
+            <div class="canvas-wrap">
+              <canvas id="textCompressChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 8. 未压缩域名 -->
+          <div class="chart-card">
+            <h3>未压缩域名</h3>
+            <div class="canvas-wrap">
+              <canvas id="unCompressDomainChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 9. Initiator 数量 -->
+          <div class="chart-card">
+            <h3>Initiator 数量</h3>
+            <div class="canvas-wrap">
+              <canvas id="initiatorTypeCountChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 10. Initiator 域名 -->
+          <div class="chart-card">
+            <h3>Initiator 域名</h3>
+            <div class="canvas-wrap">
+              <canvas id="initiatorTypeDomainChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 11. 文件类型数量 -->
+          <div class="chart-card">
+            <h3>文件类型数量</h3>
+            <div class="canvas-wrap">
+              <canvas id="fileTypeCountChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 12. 文件类型域名 -->
+          <div class="chart-card">
+            <h3>文件类型域名</h3>
+            <div class="canvas-wrap">
+              <canvas id="fileTypeDomainChart"></canvas>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 模块5 & 6: 慢资源排行 ========== -->
+      <!-- 说明：展示加载最慢的资源列表 -->
+      <!-- 分类：静态资源Top5、AJAX请求Top5 -->
+      <!-- 功能：支持点击复制链接 -->
+      <!-- 动画：延迟0.5s -->
+      <section class="section fade-in-up" style="--delay: 0.5s">
+        <div class="tabs-header">
+          <h2>慢资源排行</h2>
+        </div>
+
+        <!-- 静态资源 Top 5 -->
+        <div class="table-card">
+          <h3 class="table-title">慢静态资源</h3>
+          <div class="table-container">
+            <!-- 表格列：资源地址、类型、协议、加载时间、传输大小、压缩大小、实际大小 -->
+            <table id="slowResourceTable">
+              <thead>
+                <tr>
+                  <th>资源地址</th>
+                  <th>类型</th>
+                  <th>协议</th>
+                  <th>加载时间(ms)</th>
+                  <th>传输大小</th>
+                  <th>压缩大小</th>
+                  <th>实际大小</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- AJAX请求 Top 5 -->
+        <div class="table-card" style="margin-top: 20px;">
+          <h3 class="table-title">慢AJAX</h3>
+          <div class="table-container">
+            <table id="slowAjaxTable">
+              <thead>
+                <tr>
+                  <th>资源地址</th>
+                  <th>类型</th>
+                  <th>协议</th>
+                  <th>加载时间(ms)</th>
+                  <th>传输大小</th>
+                  <th>压缩大小</th>
+                  <th>实际大小</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- 复制提示 Toast -->
+    <!-- 说明：用户点击资源地址后显示的提示 -->
+    <!-- 样式：固定在右上角、蓝色背景、白色文字、圆角4px -->
+    <div class="copy-toast">
+      已复制域名！
+    </div>
+
+  </div>
+
+  <!-- ========== 脚本引入 ========== -->
+  <!-- 注意：已移除内联脚本，避免CSP违规 -->
+
+  <!-- Chart.js：用于饼图、柱状图等基础图表 -->
+  <script src="lib/chart.umd.js"></script>
+
+  <!-- ECharts：用于瀑布流等复杂图表 -->
+  <script src="lib/echarts.min.js"></script>
+
+  <!-- 主应用脚本：popup.js包含所有业务逻辑 -->
+  <script src="popup.js"></script>
+
+</body>
+</html>
