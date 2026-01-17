@@ -155,10 +155,10 @@
             <span class="value" id="avgTime">0ms</span>
           </div>
 
-          <!-- 网络耗时 -->
+          <!-- 网络传输 -->
           <div class="metric-card">
-            <span class="label">网络耗时</span>
-            <span class="value" id="networkTime">0ms</span>
+            <span class="label">网络传输</span>
+            <span class="value" id="networkTransfer">0B</span>
           </div>
 
           <!-- 压缩大小 -->
@@ -173,17 +173,12 @@
             <span class="value" id="actualSize">0B</span>
           </div>
 
-          <!-- 压缩率 -->
-          <div class="metric-card">
-            <span class="label">压缩率</span>
-            <span class="value" id="compressionRate">0%</span>
-          </div>
-
           <!-- 跨域无法统计请求 -->
           <div class="metric-card">
-            <span class="label">跨域限制</span>
+            <span class="label">跨域无法统计请求</span>
             <span class="value" id="crossDomainRequests">0个</span>
           </div>
+
         </div>
       </section>
 
@@ -197,37 +192,84 @@
           <h2>深度分析</h2>
         </div>
 
-        <!-- 图表网格：2列布局，共12个图表 -->
+        <!-- 图表网格：2列布局，优化的域名分析图表 -->
         <div class="charts-grid-section">
-          <!-- 1. 请求数量域名分布 -->
+          <!-- 1. 请求域名分布（三层分类） -->
           <div class="chart-card">
-            <h3>请求数量域名分布</h3>
-            <div class="canvas-wrap">
-              <canvas id="reqCountDomainChart"></canvas>
+            <div class="chart-header">
+              <h3>请求域名分布</h3>
+              <button class="export-btn" data-chart="domainDistChart" onclick="exportChart(this)">导出</button>
             </div>
-          </div>
-
-          <!-- 2. 域名分布 -->
-          <div class="chart-card">
-            <h3>域名分布</h3>
             <div class="canvas-wrap">
               <canvas id="domainDistChart"></canvas>
             </div>
           </div>
 
-          <!-- 3. 请求域名分布 -->
+          <!-- 2. 域名分布统计表格 -->
           <div class="chart-card">
-            <h3>请求域名分布</h3>
-            <div class="canvas-wrap">
-              <canvas id="reqDomainChart"></canvas>
+            <h3>域名分布统计</h3>
+            <div class="table-wrap">
+              <table id="domainDistTable">
+                <thead>
+                  <tr>
+                    <th>分类</th>
+                    <th>请求数量</th>
+                    <th>占比</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
             </div>
           </div>
 
-          <!-- 4. 各域名耗时 -->
+          <!-- 3. 整体请求域名分布（突出前5） -->
           <div class="chart-card">
-            <h3>各域名耗时</h3>
+            <div class="chart-header">
+              <h3>整体请求域名分布</h3>
+              <button class="export-btn" data-chart="overallDomainChart" onclick="exportChart(this)">导出</button>
+            </div>
+            <div class="canvas-wrap">
+              <canvas id="overallDomainChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 4. 域名耗时对比（横向簇状条形图） -->
+          <div class="chart-card chart-card-full">
+            <div class="chart-header">
+              <h3>域名耗时对比</h3>
+              <button class="export-btn" data-chart="domainTimeChart" onclick="exportChart(this)">导出</button>
+            </div>
             <div class="canvas-wrap">
               <canvas id="domainTimeChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 11. 域名详细分析（带翻页） -->
+          <div class="chart-card chart-card-full">
+            <div class="chart-header">
+              <h3>域名详细分析</h3>
+              <div class="pagination-controls">
+                <button class="pagination-btn" onclick="prevDomainPage()">◀ 上一页</button>
+                <span class="pagination-info" id="domainPageInfo">第 1 页 / 共 1 页</span>
+                <button class="pagination-btn" onclick="nextDomainPage()">下一页 ▶</button>
+              </div>
+            </div>
+            <div class="domain-details-wrapper">
+              <table id="domainDetailsTable">
+                <thead>
+                  <tr>
+                    <th>域名</th>
+                    <th>请求数</th>
+                    <th>平均延迟</th>
+                    <th>最小延迟</th>
+                    <th>最大延迟</th>
+                    <th>传输大小</th>
+                    <th>缓存命中</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="domainDetailsBody"></tbody>
+              </table>
             </div>
           </div>
 
@@ -247,23 +289,7 @@
             </div>
           </div>
 
-          <!-- 7. 文本压缩率 -->
-          <div class="chart-card">
-            <h3>文本压缩率</h3>
-            <div class="canvas-wrap">
-              <canvas id="textCompressChart"></canvas>
-            </div>
-          </div>
-
-          <!-- 8. 未压缩域名 -->
-          <div class="chart-card">
-            <h3>未压缩域名</h3>
-            <div class="canvas-wrap">
-              <canvas id="unCompressDomainChart"></canvas>
-            </div>
-          </div>
-
-          <!-- 9. Initiator 数量 -->
+          <!-- 7. Initiator 数量 -->
           <div class="chart-card">
             <h3>Initiator 数量</h3>
             <div class="canvas-wrap">
@@ -271,7 +297,7 @@
             </div>
           </div>
 
-          <!-- 10. Initiator 域名 -->
+          <!-- 8. Initiator 域名 -->
           <div class="chart-card">
             <h3>Initiator 域名</h3>
             <div class="canvas-wrap">
@@ -279,7 +305,7 @@
             </div>
           </div>
 
-          <!-- 11. 文件类型数量 -->
+          <!-- 9. 文件类型数量 -->
           <div class="chart-card">
             <h3>文件类型数量</h3>
             <div class="canvas-wrap">
@@ -287,7 +313,7 @@
             </div>
           </div>
 
-          <!-- 12. 文件类型域名 -->
+          <!-- 10. 文件类型域名 -->
           <div class="chart-card">
             <h3>文件类型域名</h3>
             <div class="canvas-wrap">

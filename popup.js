@@ -8,6 +8,23 @@ const THRESHOLDS = {
 
 const SLOW_THRESHOLD = 40;
 
+// 全局域名数据存储
+let globalDomainData = {
+  domains: [],
+  domainCounts: {},
+  totalRequests: 0,
+  domainDetails: {},
+  resources: []
+};
+
+// 分页状态
+let domainPagination = {
+  currentPage: 1,
+  pageSize: 10,
+  totalDomains: 0,
+  totalPages: 1
+};
+
 function getMetricStatus(value, metric) {
   if (!value || value < 0) return 'medium';
   const t = THRESHOLDS[metric];
@@ -101,6 +118,52 @@ function getResourceType(resource) {
 function isAjaxRequest(resource) {
   const type = resource.initiatorType;
   return type === 'xmlhttprequest' || type === 'fetch';
+}
+
+/**
+ * 验证资源数据的准确性，过滤无效数据
+ * @param {Array} resources - 资源数组
+ * @returns {Array} 验证后的资源数组
+ */
+function validateResources(resources) {
+  if (!Array.isArray(resources)) return [];
+  
+  return resources.filter(r => {
+    // 验证必需字段
+    if (!r || typeof r !== 'object') return false;
+    if (!r.name || typeof r.name !== 'string') return false;
+    
+    // 验证数值类型
+    if (typeof r.duration !== 'number' || r.duration < 0) return false;
+    if (typeof r.transferSize !== 'number' || r.transferSize < 0) return false;
+    if (typeof r.decodedBodySize !== 'number' || r.decodedBodySize < 0) return false;
+    if (typeof r.startTime !== 'number' || r.startTime < 0) return false;
+    
+    // 验证域名
+    if (!r.domain || typeof r.domain !== 'string') return false;
+    
+    // 验证资源类型
+    if (!r.type || typeof r.type !== 'string') return false;
+    
+    return true;
+  });
+}
+
+/**
+ * 验证跨域请求数据
+ * @param {Array} crossOriginRequests - 跨域请求数组
+ * @returns {Array} 验证后的跨域请求数组
+ */
+function validateCrossOriginRequests(crossOriginRequests) {
+  if (!Array.isArray(crossOriginRequests)) return [];
+  
+  return crossOriginRequests.filter(item => {
+    if (!item || typeof item !== 'object') return false;
+    if (!item.domain || typeof item.domain !== 'string') return false;
+    if (typeof item.count !== 'number' || item.count < 0) return false;
+    // types 和 initiatorTypes 是可选字段
+    return true;
+  });
 }
 
 function rand(min, max) { return Math.floor(Math.random() * (max - min)) + min; }
@@ -252,15 +315,49 @@ function collectWaterfallData(navigation) {
   return stages.map((s, i) => ({ name: s.name, value: Math.round(s.f()), color: s.color, formula: formulas[i], parallel: s.parallel }));
 }
 
+/**
+ * 收集资源数据并分类统计跨域请求
+ * 
+ * 跨域请求分类说明：
+ * 1. 识别标准：transferSize 为 undefined 或 null（表示无法获取传输大小）
+ * 2. 分类维度：按域名、资源类型、initiatorType 分类
+ * 3. 统计内容：各类别下的请求数量
+ * 
+ * 返回数据结构：
+ * - resources: 所有资源数据
+ * - crossOriginRequests: 跨域请求统计数组
+ *   - domain: 域名
+ *   - count: 该域名下无法统计的请求数量
+ *   - types: 该域名下各资源类型的分布（可选）
+ */
 function collectResources() {
   const resources = performance.getEntries().filter(e => e.entryType === 'resource');
   const crossOrigin = {};
   
   const processed = resources.map(r => {
     const domain = extractDomain(r.name);
+    const type = getResourceType(r);
+    const initiatorType = r.initiatorType;
+    
+    // 识别跨域请求（无法获取传输大小）
     if (!r.transferSize && r.transferSize !== 0) {
-      crossOrigin[domain] = (crossOrigin[domain] || 0) + 1;
+      if (!crossOrigin[domain]) {
+        crossOrigin[domain] = {
+          domain: domain,
+          count: 0,
+          types: {},
+          initiatorTypes: {}
+        };
+      }
+      crossOrigin[domain].count++;
+      
+      // 按资源类型分类
+      crossOrigin[domain].types[type] = (crossOrigin[domain].types[type] || 0) + 1;
+      
+      // 按initiator类型分类
+      crossOrigin[domain].initiatorTypes[initiatorType] = (crossOrigin[domain].initiatorTypes[initiatorType] || 0) + 1;
     }
+    
     return {
       name: r.name,
       duration: r.responseEnd - r.startTime,
@@ -269,15 +366,23 @@ function collectResources() {
       decodedBodySize: r.decodedBodySize,
       startTime: r.startTime,
       domain,
-      type: getResourceType(r),
-      initiatorType: r.initiatorType,
+      type,
+      initiatorType,
       cached: r.transferSize === 0 && r.responseEnd > r.startTime
     };
   });
   
+  // 转换为数组格式，包含详细的分类信息
+  const crossOriginRequests = Object.values(crossOrigin).map(item => ({
+    domain: item.domain,
+    count: item.count,
+    types: item.types,
+    initiatorTypes: item.initiatorTypes
+  }));
+  
   return {
     resources: processed,
-    crossOriginRequests: Object.entries(crossOrigin).map(([d, c]) => ({ domain: d, count: c }))
+    crossOriginRequests
   };
 }
 
@@ -392,53 +497,237 @@ function renderWaterfallChart(data) {
   window.addEventListener('resize', () => myChart.resize());
 }
 
+/**
+ * 渲染资源分析数据
+ * 
+ * 网络传输计算说明：
+ * 1. 总传输大小 = 所有资源的 transferSize 之和（不包括缓存资源）
+ * 2. 网络传输大小 = 所有有实际网络传输的资源的大小总和
+ *    - 缓存资源（transferSize === 0）不计入网络传输
+ *    - 跨域资源（transferSize 为 undefined 或 null）不计入网络传输
+ * 3. 不同场景的传输大小差异：
+ *    - 正常加载：transferSize = 实际传输的字节数
+ *    - 缓存命中：transferSize = 0（无网络传输）
+ *    - 跨域资源：transferSize = undefined（无法获取传输大小）
+ *    - 压缩资源：transferSize = 压缩后的大小（encodedBodySize）
+ * 
+ * 跨域请求统计说明：
+ * 1. 跨域请求识别：transferSize 为 undefined 或 null
+ * 2. 分类统计：按域名分类统计无法获取大小的资源数量
+ * 3. 显示逻辑：当存在跨域请求时，显示具体的无法统计的请求数量
+ */
 function renderResourceAnalysis({ resources, crossOriginRequests }) {
+  // 验证数据
+  resources = validateResources(resources);
+  crossOriginRequests = validateCrossOriginRequests(crossOriginRequests);
+
   const domains = new Set(resources.map(r => r.domain));
   const totalRequests = resources.length;
+
+  // 计算每个域名的请求数量和详细信息
+  const domainCounts = {};
+  const domainDetails = {};
+
+  resources.forEach(r => {
+    // 统计请求数
+    domainCounts[r.domain] = (domainCounts[r.domain] || 0) + 1;
+
+    // 收集详细信息
+    if (!domainDetails[r.domain]) {
+      domainDetails[r.domain] = {
+        count: 0,
+        durations: [],
+        totalDuration: 0
+      };
+    }
+    domainDetails[r.domain].count++;
+    domainDetails[r.domain].durations.push(r.duration);
+    domainDetails[r.domain].totalDuration += r.duration;
+  });
+
+  // 计算每个域名的统计信息
+  Object.keys(domainDetails).forEach(domain => {
+    const detail = domainDetails[domain];
+    detail.avgDuration = detail.totalDuration / detail.count;
+    detail.minDuration = Math.min(...detail.durations);
+    detail.maxDuration = Math.max(...detail.durations);
+  });
+
+  // 保存域名数据到全局变量（用于展开显示）
+  globalDomainData = {
+    domains: Array.from(domains),
+    domainCounts,
+    totalRequests,
+    domainDetails,
+    resources
+  };
   const totalTime = resources.reduce((sum, r) => sum + r.duration, 0);
-  const networkTime = resources.reduce((sum, r) => sum + (r.transferSize > 0 ? r.duration : 0), 0);
+  
+  // 网络传输大小计算：只统计有实际网络传输的资源（transferSize > 0）
+  const networkTransfer = resources.reduce((sum, r) => {
+    if (r.transferSize && r.transferSize > 0) {
+      return sum + r.transferSize;
+    }
+    return sum;
+  }, 0);
+  
+  // 总传输大小：包括所有非缓存的资源
   const totalTransferSize = resources.reduce((sum, r) => sum + (r.transferSize || 0), 0);
   const totalActualSize = resources.reduce((sum, r) => sum + (r.decodedBodySize || 0), 0);
-  const compressionRate = totalActualSize > 0 ? ((1 - totalTransferSize / totalActualSize) * 100).toFixed(1) : 0;
+  
+  // 统计无法统计的跨域请求数量
+  const unstatableCrossOriginCount = crossOriginRequests.reduce((sum, r) => sum + r.count, 0);
+  
+  // 跨域无法统计请求显示逻辑
+  let crossOriginDisplay;
+  if (unstatableCrossOriginCount > 0) {
+    crossOriginDisplay = `${unstatableCrossOriginCount}个`;
+  } else {
+    crossOriginDisplay = '0个';
+  }
   
   const stats = [
     ['domainTotal', `${domains.size}个`],
     ['requestTotal', `${totalRequests}个`],
     ['totalTime', `${Math.round(totalTime)}ms`],
     ['avgTime', `${Math.round(totalRequests > 0 ? totalTime / totalRequests : 0)}ms`],
-    ['networkTime', `${Math.round(networkTime)}ms`],
+    ['networkTransfer', formatSize(networkTransfer)],
     ['compressedSize', formatSize(totalTransferSize)],
     ['actualSize', formatSize(totalActualSize)],
-    ['compressionRate', `${compressionRate}%`],
-    ['crossDomainRequests', `${crossOriginRequests.length}个`]
+    ['crossDomainRequests', crossOriginDisplay]
   ];
   
   stats.forEach(([id, value]) => {
     const el = document.getElementById(id);
     if (el) el.textContent = value;
   });
+  
+  // 在控制台输出详细的网络传输和跨域请求数据统计信息（用于调试和验证）
+  console.log('===== 网络传输统计详情 =====');
+  console.log(`网络传输大小: ${formatSize(networkTransfer)}`);
+  console.log(`  - 仅统计有实际网络传输的资源（transferSize > 0）`);
+  console.log(`  - 排除缓存资源（transferSize === 0）`);
+  console.log(`  - 排除跨域资源（transferSize undefined）`);
+  console.log('');
+  
+  console.log(`总传输大小: ${formatSize(totalTransferSize)}`);
+  console.log(`  - 包含所有非缓存资源的传输大小`);
+  console.log('');
+  
+  console.log(`实际大小: ${formatSize(totalActualSize)}`);
+  console.log(`  - 资源解压后的实际大小`);
+  console.log('');
+  
+  console.log('===== 跨域无法统计请求详情 =====');
+  console.log(`总数量: ${unstatableCrossOriginCount}个`);
+  console.log(`  - 无法获取传输大小的资源（transferSize 为 undefined）`);
+  console.log('');
+  
+  if (crossOriginRequests.length > 0) {
+    console.log('按域名分类:');
+    crossOriginRequests.forEach(item => {
+      console.log(`  - ${item.domain}: ${item.count}个`);
+      if (item.types) {
+        console.log('    按资源类型:');
+        Object.entries(item.types).forEach(([type, count]) => {
+          console.log(`      ${type}: ${count}个`);
+        });
+      }
+      if (item.initiatorTypes) {
+        console.log('    按Initiator类型:');
+        Object.entries(item.initiatorTypes).forEach(([initiator, count]) => {
+          console.log(`      ${initiator}: ${count}个`);
+        });
+      }
+    });
+  }
+  console.log('');
+  
+  console.log('===== 数据统计汇总 =====');
+  console.log(`总请求数: ${totalRequests}个`);
+  console.log(`  - 可统计资源: ${resources.filter(r => r.transferSize !== undefined).length}个`);
+  console.log(`  - 无法统计资源（跨域）: ${unstatableCrossOriginCount}个`);
+  console.log(`  - 缓存资源: ${resources.filter(r => r.cached).length}个`);
+  console.log('==========================\n');
 }
 
 const CHART_COLORS = ['#4285f4', '#34a853', '#fbbc05', '#ea4335', '#9c27b0'];
 
-function createPieChart(id, labels, data) {
+// 存储图表实例以便导出
+const chartInstances = {};
+
+function createPieChart(id, labels, data, options = {}) {
   const ctx = document.getElementById(id);
   if (!ctx) return;
-  new Chart(ctx, {
+  
+  const defaultOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        position: 'right',
+        labels: { boxWidth: 12, padding: 10 }
+      },
+      tooltip: {
+        callbacks: {
+          label: function(context) {
+            const label = context.label || '';
+            const value = context.parsed || 0;
+            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+            const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+            return `${label}: ${value}个 (${percentage}%)`;
+          }
+        }
+      }
+    }
+  };
+  
+  const chart = new Chart(ctx, {
     type: 'pie',
     data: { labels, datasets: [{ data, backgroundColor: CHART_COLORS }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { boxWidth: 12 } } } }
+    options: { ...defaultOptions, ...options }
   });
+  
+  chartInstances[id] = chart;
+  return chart;
 }
 
-function createBarChart(id, labels, data, label = '', color = '#4285f4') {
+function createBarChart(id, labels, data, label = '', color = '#4285f4', options = {}) {
   const ctx = document.getElementById(id);
   if (!ctx) return;
-  new Chart(ctx, {
+  
+  const defaultOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: function(context) {
+            return `${label}: ${context.parsed.y}`;
+          }
+        }
+      }
+    },
+    scales: {
+      y: {
+        beginAtZero: true,
+        ticks: { color: '#999' }
+      },
+      x: {
+        ticks: { color: '#999' }
+      }
+    }
+  };
+  
+  const chart = new Chart(ctx, {
     type: 'bar',
     data: { labels, datasets: [{ label, data, backgroundColor: color }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    options: { ...defaultOptions, ...options }
   });
+  
+  chartInstances[id] = chart;
+  return chart;
 }
 
 function countBy(resources, keyFn) {
@@ -449,49 +738,400 @@ function countBy(resources, keyFn) {
   }, {});
 }
 
-function renderDeepAnalysis({ resources, crossOriginRequests }) {
+/**
+ * 三层域名分类
+ * @param {Array} resources - 资源数组
+ * @param {string} mainDomain - 主域名（用于判断同主域名）
+ * @returns {Object} 三层分类统计
+ */
+function classifyDomains(resources, mainDomain) {
+  const result = {
+    sameDomain: 0,      // 本域名（完全相同）
+    sameRootDomain: 0,  // 同主域名（二级域名相同）
+    crossDomain: 0       // 跨域第三方
+  };
+  
+  resources.forEach(r => {
+    const domain = r.domain;
+    
+    // 完全相同
+    if (domain === mainDomain) {
+      result.sameDomain++;
+    } else if (isSameRootDomain(domain, mainDomain)) {
+      result.sameRootDomain++;
+    } else {
+      result.crossDomain++;
+    }
+  });
+  
+  return result;
+}
+
+/**
+ * 判断两个域名是否属于同一个主域名
+ * @param {string} domain1 - 域名1
+ * @param {string} domain2 - 域名2
+ * @returns {boolean} 是否同主域名
+ */
+function isSameRootDomain(domain1, domain2) {
+  if (!domain1 || !domain2) return false;
+  
+  // 提取主域名（去掉子域名）
+  const parts1 = domain1.split('.');
+  const parts2 = domain2.split('.');
+  
+  // 至少需要两级域名
+  if (parts1.length < 2 || parts2.length < 2) return false;
+  
+  // 比较主域名（最后两级）
+  const root1 = parts1.slice(-2).join('.');
+  const root2 = parts2.slice(-2).join('.');
+  
+  return root1 === root2;
+}
+
+/**
+ * 创建三层域名分类饼图
+ * @param {Array} resources - 资源数组
+ * @param {string} mainDomain - 主域名
+ */
+function createDomainClassificationChart(resources, mainDomain) {
+  const classification = classifyDomains(resources, mainDomain);
+  const labels = ['本域名', '同主域名', '跨域第三方'];
+  const data = [classification.sameDomain, classification.sameRootDomain, classification.crossDomain];
+  const colors = ['#4285f4', '#34a853', '#ea4335']; // 蓝、绿、红
+  
+  createPieChart('domainDistChart', labels, data, {
+    plugins: {
+      legend: {
+        position: 'right',
+        labels: {
+          boxWidth: 12,
+          padding: 10,
+          generateLabels: function(chart) {
+            const data = chart.data;
+            return data.labels.map((label, i) => ({
+              text: `${label}: ${data.datasets[0].data[i]}个`,
+              fillStyle: colors[i],
+              index: i
+            }));
+          }
+        }
+      },
+      tooltip: {
+        callbacks: {
+          label: function(context) {
+            const label = context.label;
+            const value = context.parsed;
+            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+            const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+            return `${label}: ${value}个 (${percentage}%)`;
+          }
+        }
+      }
+    }
+  });
+  
+  return classification;
+}
+
+/**
+ * 创建域名分布统计表格
+ * @param {Object} classification - 三层分类结果
+ */
+function createDomainDistTable(classification) {
+  const tbody = document.querySelector('#domainDistTable tbody');
+  if (!tbody) return;
+  
+  tbody.innerHTML = '';
+  
+  const total = classification.sameDomain + classification.sameRootDomain + classification.crossDomain;
+  
+  const rows = [
+    { label: '同主域名', count: classification.sameDomain + classification.sameRootDomain },
+    { label: '跨域第三方', count: classification.crossDomain }
+  ];
+  
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    const percentage = total > 0 ? ((row.count / total) * 100).toFixed(1) : 0;
+    tr.innerHTML = `
+      <td>${row.label}</td>
+      <td>${row.count}个</td>
+      <td>${percentage}%</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+/**
+ * 创建整体请求域名分布饼图（突出前5大域名）
+ * @param {Array} resources - 资源数组
+ */
+function createOverallDomainChart(resources) {
   const domainCounts = countBy(resources, r => r.domain);
-  const domainTimes = resources.reduce((acc, r) => {
-    acc[r.domain] = (acc[r.domain] || 0) + r.duration;
-    return acc;
-  }, {});
+  
+  // 按请求数量降序排序
+  const sortedDomains = Object.entries(domainCounts)
+    .sort((a, b) => b[1] - a[1]);
+  
+  // 取前5大域名
+  const top5Domains = sortedDomains.slice(0, 5);
+  const top5Count = top5Domains.reduce((sum, [, count]) => sum + count, 0);
+  
+  // 其他域名合并
+  const otherCount = sortedDomains.slice(5).reduce((sum, [, count]) => sum + count, 0);
+  
+  let labels = top5Domains.map(([domain]) => domain);
+  let data = top5Domains.map(([, count]) => count);
+  
+  if (otherCount > 0) {
+    labels.push('其他');
+    data.push(otherCount);
+  }
+  
+  createPieChart('overallDomainChart', labels, data);
+}
+
+/**
+ * 创建域名耗时对比条形图（含最大/最小耗时标注）
+ * @param {Array} resources - 资源数组
+ */
+function createDomainTimeComparisonChart(resources) {
+  // 计算每个域名的耗时统计
+  const domainStats = {};
+  
+  resources.forEach(r => {
+    const domain = r.domain;
+    if (!domainStats[domain]) {
+      domainStats[domain] = {
+        totalDuration: 0,
+        count: 0,
+        maxDuration: 0,
+        minDuration: Infinity
+      };
+    }
+    
+    const stats = domainStats[domain];
+    stats.totalDuration += r.duration;
+    stats.count += 1;
+    stats.maxDuration = Math.max(stats.maxDuration, r.duration);
+    stats.minDuration = Math.min(stats.minDuration, r.duration);
+  });
+  
+  // 计算平均耗时并按平均耗时降序排序
+  const sortedDomains = Object.entries(domainStats)
+    .map(([domain, stats]) => ({
+      domain,
+      avgDuration: stats.totalDuration / stats.count,
+      maxDuration: stats.maxDuration,
+      minDuration: stats.minDuration === Infinity ? 0 : stats.minDuration,
+      count: stats.count
+    }))
+    .sort((a, b) => b.avgDuration - a.avgDuration);
+  
+  const labels = sortedDomains.map(d => d.domain);
+  const avgData = sortedDomains.map(d => Math.round(d.avgDuration));
+  const maxData = sortedDomains.map(d => Math.round(d.maxDuration));
+  const minData = sortedDomains.map(d => Math.round(d.minDuration));
+  
+  createBarChart('domainTimeChart', labels, avgData, '平均耗时', '#4285f4', {
+    indexAxis: 'y', // 横向条形图
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          title: function(context) {
+            return sortedDomains[context[0].dataIndex]?.domain || '';
+          },
+          afterBody: function(context) {
+            const index = context[0].dataIndex;
+            const stats = sortedDomains[index];
+            if (!stats) return '';
+            return [
+              `平均耗时: ${Math.round(stats.avgDuration)}ms`,
+              `最大耗时: ${Math.round(stats.maxDuration)}ms`,
+              `最小耗时: ${Math.round(stats.minDuration)}ms`,
+              `请求数量: ${stats.count}个`
+            ];
+          }
+        }
+      }
+    },
+    scales: {
+      y: {
+        beginAtZero: true,
+        ticks: { color: '#999' }
+      },
+      x: {
+        beginAtZero: true,
+        title: {
+          display: true,
+          text: '耗时 (ms)',
+          color: '#999'
+        },
+        ticks: { color: '#999' }
+      }
+    }
+  });
+}
+
+/**
+ * 渲染深度分析图表
+ * @param {Object} params - 包含resources和crossOriginRequests的对象
+ */
+function renderDeepAnalysis({ resources, crossOriginRequests }) {
+  // 验证数据
+  resources = validateResources(resources);
+  crossOriginRequests = validateCrossOriginRequests(crossOriginRequests);
+
+  if (resources.length === 0) return;
+
+  // 获取主域名（从第一个资源中提取）
+  const mainDomain = resources[0]?.domain || '';
+
+  // 1. 创建三层域名分类饼图
+  const classification = createDomainClassificationChart(resources, mainDomain);
+
+  // 2. 创建域名分布统计表格
+  createDomainDistTable(classification);
+
+  // 3. 创建整体请求域名分布饼图（突出前5大域名）
+  createOverallDomainChart(resources);
+
+  // 4. 创建域名耗时对比条形图（含最大/最小耗时标注）
+  createDomainTimeComparisonChart(resources);
+
+  // 5. 跨域分布 (No TAO)
+  if (crossOriginRequests.length > 0) {
+    createPieChart('taoDomainChart', crossOriginRequests.map(r => r.domain), crossOriginRequests.map(r => r.count));
+  }
+
+  // 6. 缓存命中率
+  const cachedCount = resources.filter(r => r.cached).length;
+  createPieChart('cacheRateChart', ['已缓存', '未缓存'], [cachedCount, resources.length - cachedCount]);
+
+  // 其他统计图表
   const initiatorCounts = countBy(resources, r => r.initiatorType);
   const typeCounts = countBy(resources, r => r.type);
   const initiatorDomains = countBy(resources, r => `${r.initiatorType}@${r.domain}`);
   const typeDomains = countBy(resources, r => `${r.type}@${r.domain}`);
-  
-  const labels = Object.keys(domainCounts);
-  const values = Object.values(domainCounts);
-  
-  createPieChart('reqCountDomainChart', labels, values);
-  createPieChart('domainDistChart', labels, values);
-  createBarChart('reqDomainChart', labels, values, '请求数', '#4285f4');
-  createBarChart('domainTimeChart', labels, Object.values(domainTimes).map(v => Math.round(v)), '耗时 (ms)', '#34a853');
-  
-  if (crossOriginRequests.length > 0) {
-    createPieChart('taoDomainChart', crossOriginRequests.map(r => r.domain), crossOriginRequests.map(r => r.count));
-  }
-  
-  const cachedCount = resources.filter(r => r.cached).length;
-  createPieChart('cacheRateChart', ['已缓存', '未缓存'], [cachedCount, resources.length - cachedCount]);
-  
-  const textResources = resources.filter(r => ['js', 'css', 'html', 'json'].includes(r.type));
-  const compressedText = textResources.filter(r => r.transferSize > 0 && r.decodedBodySize > r.transferSize).length;
-  createPieChart('textCompressChart', ['已压缩', '未压缩'], [compressedText, textResources.length - compressedText]);
-  
-  const uncompressedDomains = textResources.filter(r => r.decodedBodySize <= r.transferSize || r.transferSize === 0).reduce((acc, r) => {
-    acc[r.domain] = (acc[r.domain] || 0) + 1;
-    return acc;
-  }, {});
-  
-  if (Object.keys(uncompressedDomains).length > 0) {
-    createBarChart('unCompressDomainChart', Object.keys(uncompressedDomains), Object.values(uncompressedDomains), '未压缩文件数', '#ea4335');
-  }
-  
+
   createPieChart('initiatorTypeCountChart', Object.keys(initiatorCounts), Object.values(initiatorCounts));
   createBarChart('initiatorTypeDomainChart', Object.keys(initiatorDomains).slice(0, 10), Object.values(initiatorDomains).slice(0, 10), '数量', '#9c27b0');
   createPieChart('fileTypeCountChart', Object.keys(typeCounts), Object.values(typeCounts));
   createBarChart('fileTypeDomainChart', Object.keys(typeDomains).slice(0, 10), Object.values(typeDomains).slice(0, 10), '数量', '#ea4335');
+
+  // 11. 渲染域名详细分析表格（自动加载）
+  renderDomainDetailsTable();
+}
+
+/**
+ * 渲染域名详细分析表格（自动加载）
+ */
+function renderDomainDetailsTable() {
+  if (!globalDomainData.domainDetails || Object.keys(globalDomainData.domainDetails).length === 0) {
+    return;
+  }
+
+  // 初始化分页
+  domainPagination.totalDomains = Object.keys(globalDomainData.domainDetails).length;
+  domainPagination.totalPages = Math.ceil(domainPagination.totalDomains / domainPagination.pageSize);
+  domainPagination.currentPage = 1;
+
+  renderDomainPage();
+  updatePaginationInfo();
+}
+
+/**
+ * 渲染当前页的域名数据
+ */
+function renderDomainPage() {
+  const tbody = document.getElementById('domainDetailsBody');
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+
+  // 按平均延迟降序排序
+  const sortedDomains = Object.entries(globalDomainData.domainDetails)
+    .sort((a, b) => b[1].avgDuration - a[1].avgDuration);
+
+  // 计算当前页的域名范围
+  const startIndex = (domainPagination.currentPage - 1) * domainPagination.pageSize;
+  const endIndex = Math.min(startIndex + domainPagination.pageSize, sortedDomains.length);
+  const currentDomains = sortedDomains.slice(startIndex, endIndex);
+
+  // 渲染当前页的域名
+  currentDomains.forEach(([domain, detail]) => {
+    const tr = document.createElement('tr');
+
+    // 计算该域名的传输大小和缓存命中数
+    const domainResources = globalDomainData.resources.filter(r => r.domain === domain);
+    const totalTransferSize = domainResources.reduce((sum, r) => sum + (r.transferSize || 0), 0);
+    const cachedCount = domainResources.filter(r => r.cached).length;
+    const cachedPercentage = ((cachedCount / domainResources.length) * 100).toFixed(1);
+
+    tr.innerHTML = `
+      <td class="domain-name-cell" title="${domain}">${domain}</td>
+      <td>${detail.count}个</td>
+      <td>${Math.round(detail.avgDuration)}ms</td>
+      <td>${Math.round(detail.minDuration)}ms</td>
+      <td>${Math.round(detail.maxDuration)}ms</td>
+      <td>${formatSize(totalTransferSize)}</td>
+      <td>${cachedPercentage}% (${cachedCount}/${detail.count})</td>
+      <td>
+        <button class="action-btn" onclick="copySingleDomain('${domain}')">复制</button>
+      </td>
+    `;
+
+    tbody.appendChild(tr);
+  });
+}
+
+/**
+ * 更新分页信息显示
+ */
+function updatePaginationInfo() {
+  const pageInfo = document.getElementById('domainPageInfo');
+  if (pageInfo) {
+    pageInfo.textContent = `第 ${domainPagination.currentPage} 页 / 共 ${domainPagination.totalPages} 页`;
+  }
+
+  // 更新按钮状态
+  const prevBtn = document.querySelector('.pagination-controls button:first-child');
+  const nextBtn = document.querySelector('.pagination-controls button:last-child');
+
+  if (prevBtn) {
+    prevBtn.disabled = domainPagination.currentPage === 1;
+    prevBtn.style.opacity = domainPagination.currentPage === 1 ? '0.5' : '1';
+  }
+
+  if (nextBtn) {
+    nextBtn.disabled = domainPagination.currentPage === domainPagination.totalPages;
+    nextBtn.style.opacity = domainPagination.currentPage === domainPagination.totalPages ? '0.5' : '1';
+  }
+}
+
+/**
+ * 上一页
+ */
+function prevDomainPage() {
+  if (domainPagination.currentPage > 1) {
+    domainPagination.currentPage--;
+    renderDomainPage();
+    updatePaginationInfo();
+  }
+}
+
+/**
+ * 下一页
+ */
+function nextDomainPage() {
+  if (domainPagination.currentPage < domainPagination.totalPages) {
+    domainPagination.currentPage++;
+    renderDomainPage();
+    updatePaginationInfo();
+  }
 }
 
 function renderSlowResources({ slowStatic, slowAjax }) {
@@ -517,6 +1157,130 @@ function renderSlowResources({ slowStatic, slowAjax }) {
   
   renderTable('slowResourceTable', slowStatic, true);
   renderTable('slowAjaxTable', slowAjax, false);
+}
+
+/**
+ * 导出图表为PNG或SVG
+ * @param {HTMLElement} btn - 导出按钮元素
+ */
+function exportChart(btn) {
+  const chartId = btn.getAttribute('data-chart');
+  const chart = chartInstances[chartId];
+  
+  if (!chart) {
+    showToast('图表不存在，无法导出');
+    return;
+  }
+  
+  // 创建导出选择菜单
+  const menu = document.createElement('div');
+  menu.style.cssText = `
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    z-index: 9999;
+    min-width: 200px;
+  `;
+  
+  menu.innerHTML = `
+    <div style="font-weight: 600; margin-bottom: 15px; color: #0f172a;">导出图表</div>
+    <button id="exportPNG" style="
+      display: block;
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 8px;
+      background: #4285f4;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    ">导出为 PNG</button>
+    <button id="exportSVG" style="
+      display: block;
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 8px;
+      background: #34a853;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    ">导出为 SVG</button>
+    <button id="cancelExport" style="
+      display: block;
+      width: 100%;
+      padding: 10px;
+      background: #64748b;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    ">取消</button>
+  `;
+  
+  document.body.appendChild(menu);
+  
+  // 导出PNG
+  document.getElementById('exportPNG').addEventListener('click', () => {
+    try {
+      const link = document.createElement('a');
+      link.download = `${chartId}-chart.png`;
+      link.href = chart.toBase64Image();
+      link.click();
+      showToast('图表已导出为 PNG');
+    } catch (error) {
+      console.error('导出PNG失败:', error);
+      showToast('导出失败，请重试');
+    }
+    document.body.removeChild(menu);
+  });
+  
+  // 导出SVG（使用外部库或手动创建）
+  document.getElementById('exportSVG').addEventListener('click', () => {
+    try {
+      // Chart.js 默认不直接支持SVG导出，这里我们提供一个提示
+      // 可以使用 chartjs-plugin-doughnutlabel 或其他插件
+      // 或者使用 canvas-to-blob 库
+      showToast('SVG导出功能需要额外支持，已导出为 PNG');
+      
+      // 降级为PNG导出
+      const link = document.createElement('a');
+      link.download = `${chartId}-chart.png`;
+      link.href = chart.toBase64Image();
+      link.click();
+    } catch (error) {
+      console.error('导出SVG失败:', error);
+      showToast('导出失败，请重试');
+    }
+    document.body.removeChild(menu);
+  });
+  
+  // 取消导出
+  document.getElementById('cancelExport').addEventListener('click', () => {
+    document.body.removeChild(menu);
+  });
+  
+  // 点击外部关闭菜单
+  menu.addEventListener('click', (e) => {
+    e.stopPropagation();
+  });
+  
+  setTimeout(() => {
+    document.addEventListener('click', function closeMenu(e) {
+      if (menu.parentNode && !menu.contains(e.target)) {
+        document.body.removeChild(menu);
+        document.removeEventListener('click', closeMenu);
+      }
+    });
+  }, 100);
 }
 
 function copyDomain(url) {
@@ -569,21 +1333,44 @@ async function collectFromTab(tab) {
       }
       
       const resources = performance.getEntries().filter(e => e.entryType === 'resource');
-      const processed = resources.map(r => ({
-        name: r.name,
-        duration: r.responseEnd - r.startTime,
-        transferSize: r.transferSize,
-        encodedBodySize: r.encodedBodySize,
-        decodedBodySize: r.decodedBodySize,
-        startTime: r.startTime,
-        domain: new URL(r.name).hostname,
-        initiatorType: r.initiatorType,
-        cached: r.transferSize === 0 && r.responseEnd > r.startTime
-      }));
       
       const crossOrigin = {};
-      processed.forEach(r => {
-        if (!r.transferSize && r.transferSize !== 0) crossOrigin[r.domain] = (crossOrigin[r.domain] || 0) + 1;
+      const processed = resources.map(r => {
+        const domain = new URL(r.name).hostname;
+        const type = r.name.includes('.js') ? 'js' : 
+                    r.name.includes('.css') ? 'css' :
+                    r.name.match(/\.(jpg|jpeg|png|gif|webp|svg|ico)/) ? 'image' :
+                    r.name.match(/\.(woff|woff2|ttf|eot)/) ? 'font' :
+                    r.initiatorType === 'xmlhttprequest' || r.initiatorType === 'fetch' ? 'xhr' : 'other';
+        const initiatorType = r.initiatorType;
+        
+        // 识别跨域请求（无法获取传输大小）并分类统计
+        if (!r.transferSize && r.transferSize !== 0) {
+          if (!crossOrigin[domain]) {
+            crossOrigin[domain] = {
+              domain: domain,
+              count: 0,
+              types: {},
+              initiatorTypes: {}
+            };
+          }
+          crossOrigin[domain].count++;
+          crossOrigin[domain].types[type] = (crossOrigin[domain].types[type] || 0) + 1;
+          crossOrigin[domain].initiatorTypes[initiatorType] = (crossOrigin[domain].initiatorTypes[initiatorType] || 0) + 1;
+        }
+        
+        return {
+          name: r.name,
+          duration: r.responseEnd - r.startTime,
+          transferSize: r.transferSize,
+          encodedBodySize: r.encodedBodySize,
+          decodedBodySize: r.decodedBodySize,
+          startTime: r.startTime,
+          domain,
+          type,
+          initiatorType,
+          cached: r.transferSize === 0 && r.responseEnd > r.startTime
+        };
       });
       
       const paintEntries = performance.getEntries().filter(e => e.entryType === 'paint');
@@ -619,7 +1406,12 @@ async function collectFromTab(tab) {
         fcp,
         fmp,
         resources: processed,
-        crossOriginRequests: Object.entries(crossOrigin).map(([d, c]) => ({ domain: d, count: c }))
+        crossOriginRequests: Object.values(crossOrigin).map(item => ({
+          domain: item.domain,
+          count: item.count,
+          types: item.types,
+          initiatorTypes: item.initiatorTypes
+        }))
       };
     }
   });
@@ -704,6 +1496,98 @@ function renderAllData(data) {
   renderResourceAnalysis(data.resourceData);
   renderDeepAnalysis(data.resourceData);
   renderSlowResources(data.slowResources);
+}
+/**
+ * 复制单个域名
+ * @param {string} domain - 要复制的域名
+ */
+function copySingleDomain(domain) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(domain)
+        .then(() => showToast(`已复制域名: ${domain}`))
+        .catch(() => fallbackCopyDomain(domain));
+    } else {
+      fallbackCopyDomain(domain);
+    }
+  } catch (error) {
+    console.error('复制域名失败:', error);
+    showToast('复制失败，请手动复制');
+  }
+}
+
+/**
+ * 降级复制域名方法
+ * @param {string} text - 要复制的文本
+ */
+function fallbackCopyDomain(text) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  
+  try {
+    document.execCommand('copy');
+    showToast('已复制域名！');
+  } catch (error) {
+    console.error('复制失败:', error);
+    showToast('复制失败，请手动复制');
+  }
+  
+  document.body.removeChild(textarea);
+}
+
+/**
+ * 复制所有域名
+ */
+function copyAllDomains() {
+  const domains = globalDomainData.domains;
+  if (domains.length === 0) {
+    showToast('暂无域名数据');
+    return;
+  }
+  
+  try {
+    if (navigator.clipboard?.writeText) {
+      const domainText = domains.join('\n');
+      navigator.clipboard.writeText(domainText)
+        .then(() => {
+          showToast(`已复制 ${domains.length} 个域名！`);
+        })
+        .catch((error) => {
+          console.error('复制所有域名失败:', error);
+          fallbackCopyAllDomains(domains);
+        });
+    } else {
+      fallbackCopyAllDomains(domains);
+    }
+  } catch (error) {
+    console.error('复制所有域名失败:', error);
+    showToast('复制失败，请手动复制');
+  }
+}
+
+/**
+ * 降级复制所有域名方法
+ * @param {Array} domains - 域名数组
+ */
+function fallbackCopyAllDomains(domains) {
+  const textarea = document.createElement('textarea');
+  textarea.value = domains.join('\n');
+  textarea.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  
+  try {
+    document.execCommand('copy');
+    showToast(`已复制 ${domains.length} 个域名！`);
+  } catch (error) {
+    console.error('复制失败:', error);
+    showToast('复制失败，请手动复制');
+  }
+  
+  document.body.removeChild(textarea);
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
