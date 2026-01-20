@@ -198,35 +198,16 @@
           <div class="chart-card">
             <div class="chart-header">
               <h3>请求域名分布</h3>
-              <button class="export-btn" data-chart="domainDistChart" onclick="exportChart(this)">导出</button>
             </div>
             <div class="canvas-wrap">
               <canvas id="domainDistChart"></canvas>
             </div>
           </div>
 
-          <!-- 2. 域名分布统计表格 -->
-          <div class="chart-card">
-            <h3>域名分布统计</h3>
-            <div class="table-wrap">
-              <table id="domainDistTable">
-                <thead>
-                  <tr>
-                    <th>分类</th>
-                    <th>请求数量</th>
-                    <th>占比</th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- 3. 整体请求域名分布（突出前5） -->
+          <!-- 2. 整体请求域名分布（显示所有域名） -->
           <div class="chart-card">
             <div class="chart-header">
               <h3>整体请求域名分布</h3>
-              <button class="export-btn" data-chart="overallDomainChart" onclick="exportChart(this)">导出</button>
             </div>
             <div class="canvas-wrap">
               <canvas id="overallDomainChart"></canvas>
@@ -237,14 +218,13 @@
           <div class="chart-card chart-card-full">
             <div class="chart-header">
               <h3>域名耗时对比</h3>
-              <button class="export-btn" data-chart="domainTimeChart" onclick="exportChart(this)">导出</button>
             </div>
             <div class="canvas-wrap">
               <canvas id="domainTimeChart"></canvas>
             </div>
           </div>
 
-          <!-- 11. 域名详细分析（带翻页） -->
+          <!-- 5. 域名详细分析（带翻页） -->
           <div class="chart-card chart-card-full">
             <div class="chart-header">
               <h3>域名详细分析</h3>
@@ -273,7 +253,7 @@
             </div>
           </div>
 
-          <!-- 5. 跨域分布 (No TAO) -->
+          <!-- 6. 跨域分布 (No TAO) -->
           <div class="chart-card">
             <h3>跨域分布 (No TAO)</h3>
             <div class="canvas-wrap">
@@ -281,7 +261,7 @@
             </div>
           </div>
 
-          <!-- 6. 缓存命中率 -->
+          <!-- 7. 缓存命中率 -->
           <div class="chart-card">
             <h3>缓存命中率</h3>
             <div class="canvas-wrap">
@@ -289,7 +269,7 @@
             </div>
           </div>
 
-          <!-- 7. Initiator 数量 -->
+          <!-- 8. Initiator 数量 -->
           <div class="chart-card">
             <h3>Initiator 数量</h3>
             <div class="canvas-wrap">
@@ -297,7 +277,7 @@
             </div>
           </div>
 
-          <!-- 8. Initiator 域名 -->
+          <!-- 9. Initiator 域名 -->
           <div class="chart-card">
             <h3>Initiator 域名</h3>
             <div class="canvas-wrap">
@@ -305,7 +285,7 @@
             </div>
           </div>
 
-          <!-- 9. 文件类型数量 -->
+          <!-- 10. 文件类型数量 -->
           <div class="chart-card">
             <h3>文件类型数量</h3>
             <div class="canvas-wrap">
@@ -313,7 +293,7 @@
             </div>
           </div>
 
-          <!-- 10. 文件类型域名 -->
+          <!-- 11. 文件类型域名 -->
           <div class="chart-card">
             <h3>文件类型域名</h3>
             <div class="canvas-wrap">

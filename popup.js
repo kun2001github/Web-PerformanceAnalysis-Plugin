@@ -577,13 +577,22 @@ function renderResourceAnalysis({ resources, crossOriginRequests }) {
   
   // 统计无法统计的跨域请求数量
   const unstatableCrossOriginCount = crossOriginRequests.reduce((sum, r) => sum + r.count, 0);
-  
+
   // 跨域无法统计请求显示逻辑
   let crossOriginDisplay;
   if (unstatableCrossOriginCount > 0) {
     crossOriginDisplay = `${unstatableCrossOriginCount}个`;
   } else {
     crossOriginDisplay = '0个';
+  }
+
+  // 检查是否有 transferSize === 0 的非缓存资源（可能的跨域资源）
+  const zeroTransferNonCached = resources.filter(r => r.transferSize === 0 && !r.cached);
+  if (zeroTransferNonCached.length > 0) {
+    console.warn(`⚠️ 发现 ${zeroTransferNonCached.length} 个 transferSize=0 的非缓存资源，可能是跨域资源：`);
+    zeroTransferNonCached.forEach(r => {
+      console.warn(`  - ${r.name}`);
+    });
   }
   
   const stats = [
@@ -620,9 +629,10 @@ function renderResourceAnalysis({ resources, crossOriginRequests }) {
   
   console.log('===== 跨域无法统计请求详情 =====');
   console.log(`总数量: ${unstatableCrossOriginCount}个`);
-  console.log(`  - 无法获取传输大小的资源（transferSize 为 undefined）`);
+  console.log(`  - 判断标准：transferSize 为 0、undefined 或 null 且非缓存`);
+  console.log('  - 注意：某些浏览器对跨域资源返回 transferSize = 0');
   console.log('');
-  
+
   if (crossOriginRequests.length > 0) {
     console.log('按域名分类:');
     crossOriginRequests.forEach(item => {
@@ -639,7 +649,20 @@ function renderResourceAnalysis({ resources, crossOriginRequests }) {
           console.log(`      ${initiator}: ${count}个`);
         });
       }
+      if (item.transferSizeValues) {
+        console.log('    transferSize 值分布:');
+        const counts = {};
+        item.transferSizeValues.forEach(v => {
+          const key = v === undefined ? 'undefined' : v === null ? 'null' : `0`;
+          counts[key] = (counts[key] || 0) + 1;
+        });
+        Object.entries(counts).forEach(([value, count]) => {
+          console.log(`      ${value}: ${count}个`);
+        });
+      }
     });
+  } else {
+    console.log('✓ 未检测到跨域无法统计的请求');
   }
   console.log('');
   
@@ -767,26 +790,16 @@ function classifyDomains(resources, mainDomain) {
   return result;
 }
 
-/**
- * 判断两个域名是否属于同一个主域名
- * @param {string} domain1 - 域名1
- * @param {string} domain2 - 域名2
- * @returns {boolean} 是否同主域名
- */
 function isSameRootDomain(domain1, domain2) {
   if (!domain1 || !domain2) return false;
-  
-  // 提取主域名（去掉子域名）
+
   const parts1 = domain1.split('.');
   const parts2 = domain2.split('.');
-  
-  // 至少需要两级域名
-  if (parts1.length < 2 || parts2.length < 2) return false;
-  
-  // 比较主域名（最后两级）
-  const root1 = parts1.slice(-2).join('.');
-  const root2 = parts2.slice(-2).join('.');
-  
+
+  // 提取主域名（最后两级，如果只有一级则取一级）
+  const root1 = parts1.length >= 2 ? parts1.slice(-2).join('.') : parts1.join('.');
+  const root2 = parts2.length >= 2 ? parts2.slice(-2).join('.') : parts2.join('.');
+
   return root1 === root2;
 }
 
@@ -799,8 +812,16 @@ function createDomainClassificationChart(resources, mainDomain) {
   const classification = classifyDomains(resources, mainDomain);
   const labels = ['本域名', '同主域名', '跨域第三方'];
   const data = [classification.sameDomain, classification.sameRootDomain, classification.crossDomain];
-  const colors = ['#4285f4', '#34a853', '#ea4335']; // 蓝、绿、红
-  
+  const colors = ['#4285f4', '#34a853', '#ea4335'];
+
+  console.log('===== 请求域名分布统计 =====');
+  console.log(`主域名: ${mainDomain}`);
+  console.log(`  - 本域名: ${classification.sameDomain}个`);
+  console.log(`  - 同主域名: ${classification.sameRootDomain}个`);
+  console.log(`  - 跨域第三方: ${classification.crossDomain}个`);
+  console.log(`  - 总计: ${resources.length}个`);
+  console.log('');
+
   createPieChart('domainDistChart', labels, data, {
     plugins: {
       legend: {
@@ -831,65 +852,29 @@ function createDomainClassificationChart(resources, mainDomain) {
       }
     }
   });
-  
+
   return classification;
 }
 
-/**
- * 创建域名分布统计表格
- * @param {Object} classification - 三层分类结果
- */
-function createDomainDistTable(classification) {
-  const tbody = document.querySelector('#domainDistTable tbody');
-  if (!tbody) return;
-  
-  tbody.innerHTML = '';
-  
-  const total = classification.sameDomain + classification.sameRootDomain + classification.crossDomain;
-  
-  const rows = [
-    { label: '同主域名', count: classification.sameDomain + classification.sameRootDomain },
-    { label: '跨域第三方', count: classification.crossDomain }
-  ];
-  
-  rows.forEach(row => {
-    const tr = document.createElement('tr');
-    const percentage = total > 0 ? ((row.count / total) * 100).toFixed(1) : 0;
-    tr.innerHTML = `
-      <td>${row.label}</td>
-      <td>${row.count}个</td>
-      <td>${percentage}%</td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-/**
- * 创建整体请求域名分布饼图（突出前5大域名）
- * @param {Array} resources - 资源数组
- */
 function createOverallDomainChart(resources) {
   const domainCounts = countBy(resources, r => r.domain);
-  
+
   // 按请求数量降序排序
   const sortedDomains = Object.entries(domainCounts)
     .sort((a, b) => b[1] - a[1]);
-  
-  // 取前5大域名
-  const top5Domains = sortedDomains.slice(0, 5);
-  const top5Count = top5Domains.reduce((sum, [, count]) => sum + count, 0);
-  
-  // 其他域名合并
-  const otherCount = sortedDomains.slice(5).reduce((sum, [, count]) => sum + count, 0);
-  
-  let labels = top5Domains.map(([domain]) => domain);
-  let data = top5Domains.map(([, count]) => count);
-  
-  if (otherCount > 0) {
-    labels.push('其他');
-    data.push(otherCount);
-  }
-  
+
+  // 显示所有域名
+  const labels = sortedDomains.map(([domain]) => domain);
+  const data = sortedDomains.map(([, count]) => count);
+
+  console.log('===== 整体请求域名分布 =====');
+  sortedDomains.forEach(([domain, count]) => {
+    console.log(`  - ${domain}: ${count}个`);
+  });
+  console.log(`  - 域名总数: ${sortedDomains.length}个`);
+  console.log(`  - 请求总数: ${data.reduce((a, b) => a + b, 0)}个`);
+  console.log('');
+
   createPieChart('overallDomainChart', labels, data);
 }
 
@@ -980,23 +965,20 @@ function createDomainTimeComparisonChart(resources) {
  * 渲染深度分析图表
  * @param {Object} params - 包含resources和crossOriginRequests的对象
  */
-function renderDeepAnalysis({ resources, crossOriginRequests }) {
+function renderDeepAnalysis({ resources, crossOriginRequests, pageDomain = '' }) {
   // 验证数据
   resources = validateResources(resources);
   crossOriginRequests = validateCrossOriginRequests(crossOriginRequests);
 
   if (resources.length === 0) return;
 
-  // 获取主域名（从第一个资源中提取）
-  const mainDomain = resources[0]?.domain || '';
+  // 使用从页面获取的主域名
+  const mainDomain = pageDomain;
 
   // 1. 创建三层域名分类饼图
   const classification = createDomainClassificationChart(resources, mainDomain);
 
-  // 2. 创建域名分布统计表格
-  createDomainDistTable(classification);
-
-  // 3. 创建整体请求域名分布饼图（突出前5大域名）
+  // 2. 创建整体请求域名分布饼图（显示所有域名）
   createOverallDomainChart(resources);
 
   // 4. 创建域名耗时对比条形图（含最大/最小耗时标注）
@@ -1159,130 +1141,6 @@ function renderSlowResources({ slowStatic, slowAjax }) {
   renderTable('slowAjaxTable', slowAjax, false);
 }
 
-/**
- * 导出图表为PNG或SVG
- * @param {HTMLElement} btn - 导出按钮元素
- */
-function exportChart(btn) {
-  const chartId = btn.getAttribute('data-chart');
-  const chart = chartInstances[chartId];
-  
-  if (!chart) {
-    showToast('图表不存在，无法导出');
-    return;
-  }
-  
-  // 创建导出选择菜单
-  const menu = document.createElement('div');
-  menu.style.cssText = `
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    background: white;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-    z-index: 9999;
-    min-width: 200px;
-  `;
-  
-  menu.innerHTML = `
-    <div style="font-weight: 600; margin-bottom: 15px; color: #0f172a;">导出图表</div>
-    <button id="exportPNG" style="
-      display: block;
-      width: 100%;
-      padding: 10px;
-      margin-bottom: 8px;
-      background: #4285f4;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 14px;
-    ">导出为 PNG</button>
-    <button id="exportSVG" style="
-      display: block;
-      width: 100%;
-      padding: 10px;
-      margin-bottom: 8px;
-      background: #34a853;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 14px;
-    ">导出为 SVG</button>
-    <button id="cancelExport" style="
-      display: block;
-      width: 100%;
-      padding: 10px;
-      background: #64748b;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 14px;
-    ">取消</button>
-  `;
-  
-  document.body.appendChild(menu);
-  
-  // 导出PNG
-  document.getElementById('exportPNG').addEventListener('click', () => {
-    try {
-      const link = document.createElement('a');
-      link.download = `${chartId}-chart.png`;
-      link.href = chart.toBase64Image();
-      link.click();
-      showToast('图表已导出为 PNG');
-    } catch (error) {
-      console.error('导出PNG失败:', error);
-      showToast('导出失败，请重试');
-    }
-    document.body.removeChild(menu);
-  });
-  
-  // 导出SVG（使用外部库或手动创建）
-  document.getElementById('exportSVG').addEventListener('click', () => {
-    try {
-      // Chart.js 默认不直接支持SVG导出，这里我们提供一个提示
-      // 可以使用 chartjs-plugin-doughnutlabel 或其他插件
-      // 或者使用 canvas-to-blob 库
-      showToast('SVG导出功能需要额外支持，已导出为 PNG');
-      
-      // 降级为PNG导出
-      const link = document.createElement('a');
-      link.download = `${chartId}-chart.png`;
-      link.href = chart.toBase64Image();
-      link.click();
-    } catch (error) {
-      console.error('导出SVG失败:', error);
-      showToast('导出失败，请重试');
-    }
-    document.body.removeChild(menu);
-  });
-  
-  // 取消导出
-  document.getElementById('cancelExport').addEventListener('click', () => {
-    document.body.removeChild(menu);
-  });
-  
-  // 点击外部关闭菜单
-  menu.addEventListener('click', (e) => {
-    e.stopPropagation();
-  });
-  
-  setTimeout(() => {
-    document.addEventListener('click', function closeMenu(e) {
-      if (menu.parentNode && !menu.contains(e.target)) {
-        document.body.removeChild(menu);
-        document.removeEventListener('click', closeMenu);
-      }
-    });
-  }, 100);
-}
-
 function copyDomain(url) {
   const domain = extractDomain(url);
   const text = document.createElement('textarea');
@@ -1333,7 +1191,9 @@ async function collectFromTab(tab) {
       }
       
       const resources = performance.getEntries().filter(e => e.entryType === 'resource');
-      
+
+      const pageDomain = window.location.hostname || '';
+
       const crossOrigin = {};
       const processed = resources.map(r => {
         const domain = new URL(r.name).hostname;
@@ -1344,19 +1204,29 @@ async function collectFromTab(tab) {
                     r.initiatorType === 'xmlhttprequest' || r.initiatorType === 'fetch' ? 'xhr' : 'other';
         const initiatorType = r.initiatorType;
         
-        // 识别跨域请求（无法获取传输大小）并分类统计
-        if (!r.transferSize && r.transferSize !== 0) {
+        // 识别跨域请求（无法获取传输大小）
+        // 判断条件：transferSize 为 0、undefined 或 null，且不是缓存命中
+        // 注意：某些浏览器对跨域资源返回 transferSize = 0
+        const isCrossOrigin = (
+          (r.transferSize === 0 && !r.cached) ||  // 跨域资源返回0且非缓存
+          r.transferSize === undefined ||        // 显式 undefined
+          r.transferSize === null                 // 显式 null
+        );
+
+        if (isCrossOrigin) {
           if (!crossOrigin[domain]) {
             crossOrigin[domain] = {
               domain: domain,
               count: 0,
               types: {},
-              initiatorTypes: {}
+              initiatorTypes: {},
+              transferSizeValues: []
             };
           }
           crossOrigin[domain].count++;
           crossOrigin[domain].types[type] = (crossOrigin[domain].types[type] || 0) + 1;
           crossOrigin[domain].initiatorTypes[initiatorType] = (crossOrigin[domain].initiatorTypes[initiatorType] || 0) + 1;
+          crossOrigin[domain].transferSizeValues.push(r.transferSize);
         }
         
         return {
@@ -1405,6 +1275,7 @@ async function collectFromTab(tab) {
         firstPaint,
         fcp,
         fmp,
+        pageDomain,
         resources: processed,
         crossOriginRequests: Object.values(crossOrigin).map(item => ({
           domain: item.domain,
@@ -1456,7 +1327,11 @@ async function initApp() {
             performanceData = {
               metrics,
               waterfallData,
-              resourceData: { resources: data.resources, crossOriginRequests: data.crossOriginRequests },
+              resourceData: {
+                resources: data.resources,
+                crossOriginRequests: data.crossOriginRequests,
+                pageDomain: data.pageDomain || ''
+              },
               slowResources: slowData
             };
           } else {
